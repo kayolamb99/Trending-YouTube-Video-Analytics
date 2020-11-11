@@ -1,0 +1,471 @@
+---
+title: "YouTube Side Project"
+output: html_document
+author: Kayode Lambkin
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+In the chunk below, I read in the necessary packages for my analysis and the data from Kaggle.com
+  (URL: https://www.kaggle.com/datasnaek/youtube-new/data)
+
+```{r Loading data and required packages, echo = FALSE, results = 'hide'}
+
+require(sqldf)
+require(ggplot2)
+require(tidyr)
+require(rpart)
+require(dplyr)
+require(stringr)
+require(caTools)
+require(pscl)
+require(reshape2)
+require(forecast)
+require(MLmetrics)
+require(astsa)
+require(TTR)
+require(stats)
+require(chron)
+require(randomForest)
+require(interactions)
+require(MASS)
+require(caret)
+require(gam)
+require(alr3)
+require(e1071)
+
+#Reading in each country's CSV file separately and labeling country column as needed
+CA <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/CAvideos.csv", header = TRUE)
+CA$country <- "CA"
+
+DE <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/DEvideos.csv", header = TRUE)
+DE$country <- "DE"
+
+FR <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/FRvideos.csv", header = TRUE)
+FR$country <- "FR"
+
+GB <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/GBvideos.csv", header = TRUE)
+GB$country <- "GB"
+
+IN <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/INvideos.csv", header = TRUE)
+IN$country <- "IN"
+
+JP <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/JPvideos.csv", header = TRUE)
+JP$country <- "JP"
+
+KR <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/KRvideos.csv", header = TRUE)
+KR$country <- "KR"
+
+MX <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/MXvideos.csv", header = TRUE)
+MX$country <- "MX"
+
+RU <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/RUvideos.csv", header = TRUE)
+RU$country <- "RU"
+
+US <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/USvideos.csv", header = TRUE)
+US$country <- "US"
+
+combined <- rbind(CA, DE, FR, GB, IN, JP, KR, MX, RU, US)
+combined <- 
+  mutate(combined, category_name = case_when(
+                                     category_id == 1 ~ 'Film & Animation',
+                                     category_id == 2 ~ 'Autos & Vehicles',
+                                     category_id == 10 ~ 'Music',
+                                     category_id == 15 ~ 'Pets & Animals',
+                                     category_id == 17 ~ 'Sports',
+                                     category_id == 18 ~ 'Short Movies',
+                                     category_id == 19 ~ 'Travel & Events',
+                                     category_id == 20 ~ 'Gaming',
+                                     category_id == 21 ~ 'Videoblogging',
+                                     category_id == 22 ~ 'People & Blogs',
+                                     category_id == 23 ~ 'Comedy',
+                                     category_id == 24 ~ 'Entertainment',
+                                     category_id == 25 ~ 'News & Politics',
+                                     category_id == 26 ~ 'Howto & Style',
+                                     category_id == 27 ~ 'Education',
+                                     category_id == 28 ~ 'Science & Technology',
+                                     category_id == 29 ~ 'Nonprofits & Activism',
+                                     category_id == 30 ~ 'Movies',
+                                     category_id == 31 ~ 'Anime/Animation',
+                                     category_id == 32 ~ 'Action/Adventure',
+                                     category_id == 33 ~ 'Classics',
+                                     category_id == 34 ~ 'Comedy',
+                                     category_id == 35 ~ 'Documentary',
+                                     category_id == 36 ~ 'Drama',
+                                     category_id == 37 ~ 'Family',
+                                     category_id == 38 ~ 'Foreign',
+                                     category_id == 39 ~ 'Horror',
+                                     category_id == 40 ~ 'Sci-Fi/Fantasy',
+                                     category_id == 41 ~ 'Thriller',
+                                     category_id == 42 ~ 'Shorts',
+                                     category_id == 43 ~ 'Shows',
+                                TRUE ~ 'Trailers' )
+                                      )
+```
+
+In the chunk below, I do some basic data wrangling, as well as define some new variables:
+  Publish Time = Time a channel published a video 
+  Time to Trend = Trend Date - Publish Date
+  Same Day Trend = Boolean. If the Time to Trend is 0, then this variable is true
+  Like Percentage = likes / likes + dislikes
+  Dislike Percentage = dislikes / dislikes + likes
+  Comment Engagement Factor = For every comment, how many views does this video receive? views/comment_count
+  Dislike Discussion Factor = For every dislike, how many comments are being generated? comment_count/dislikes
+
+Also integrated the rank variable, by joining a dataset also from Kaggle.com 
+  (URL:https://www.kaggle.com/amirmasoud32/youtube-top-5000-channel-ids )
+  
+```{r Data Wrangling and Variable Definition}
+combined <- dplyr::select(combined, video_id, trending_date, title, channel_title, category_name, publish_time, tags, views, likes, dislikes, comment_count, comments_disabled, ratings_disabled, video_error_or_removed, country)
+#Data Wrangling and Cleaning
+
+combined$trending_date <- as.Date(combined$trending_date, "%y.%d.%m")
+combined <- separate(data = combined, col = publish_time, into = c("publish_date", "publish_time"), sep = "\\T")
+combined$publish_time <- substr(combined$publish_time,1,nchar(combined$publish_time)-1)
+combined$publish_time <- substr(combined$publish_time,1,nchar(combined$publish_time)-3)
+combined$publish_time <- substr(combined$publish_time,1,nchar(combined$publish_time)-1)
+combined$publish_date <- as.Date(combined$publish_date)
+
+#New metrics defined
+combined$days_to_trend <- combined$trending_date - combined$publish_date
+
+#Fix, these ratios aren't being calculated right
+
+combined <- mutate(combined, like_pctg = likes / (likes + dislikes))
+combined <- mutate(combined, dislike_pctg = dislikes / (dislikes + likes))
+combined <- mutate(combined, comment_engage_factor = views/comment_count)
+combined <- mutate(combined, dislike_discussion_factor = comment_count/dislikes)
+combined <- mutate(combined, same_day_trend = ifelse((days_to_trend == 0),1,0))
+combined$days_to_trend <- as.numeric(combined$days_to_trend)
+
+#Deleting the "tags" column, which caused system overload errors
+    
+combined <- subset(combined, select = -c(tags))
+
+#inputting channel rank with dataset from Kaggle
+
+top_channel_list <- read.csv(file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/output.csv", header = TRUE)
+top_channel_list <- mutate(top_channel_list, rank = row_number())
+colnames(top_channel_list) <- c("channel_title", "id", "rank")
+combined <- left_join(combined, top_channel_list, by = "channel_title")
+combined <- subset(combined, select = -c(id))
+colnames(combined)
+combined <- mutate(combined, rank = ifelse((is.na(rank)),0,rank))
+combined$category_name <- relevel(as.factor(combined$category_name), ref = "Entertainment")
+
+#Writing the new dataset to csv format for analysis in Tableau
+#write.csv(combined, file = "/Users/kayode/Desktop/Side Projects/YouTube SP/Data Files/csv files/datasetv4.csv")
+```
+
+Chunk below   a basic exploratory data analysis of the combined videos dataset.
+
+Highlights:
+  News & Politics and Nonprofits & Activism videos have the highest average percentage of dislikes compared to other categories
+  India has the lowest average like percentage
+  Great Britain has the highest average views and comment count compared to other countries
+    Japan and France have the lowest in these metrics
+  Music videos have the highest number of views on average. Followed closely by Science & Tech and Shows videos
+  Time Series:
+    
+
+```{r EDA, echo=FALSE, results = 'hide'}
+
+head(combined, n = 10)
+tail(combined, n = 10)
+
+#Correlation Matrix for Numerical Variables
+  
+  combinedNumeric <- combined %>% dplyr::select (views, likes, dislikes, 
+                                        comment_count, days_to_trend, rank)
+
+  cormat <- round(cor(combinedNumeric),2)
+  
+  get_upper_tri <- function(cormat){
+    cormat[lower.tri(cormat)]<- NA
+    return(cormat)
+  }
+  
+  upper_tri <- get_upper_tri(cormat)
+  melted_mat <- melt(upper_tri, na.rm = TRUE)
+  
+  corrmatrix1 <- ggplot(data = melted_mat, aes(Var2, Var1, fill = value)) +
+                        geom_tile(color = "white") + 
+                        scale_fill_gradient2(low = "orange", high = "blue", mid = "gray", 
+                        midpoint = 0, limit = c(-1,1), space = "Lab", 
+                        name="Pearson\nCorrelation") +
+                        theme_minimal()+ 
+                        theme(axis.text.x = element_text(angle = 45, vjust = 1, 
+                        size = 12, hjust = 1))+
+                        coord_fixed()
+  
+  corrmatrixFinal = corrmatrix1 +
+                  geom_text(aes(Var2, Var1, label = value), color = "black", size = 4) +
+                  theme(
+                    axis.title.x = element_blank(),
+                    axis.title.y = element_blank(),
+                    panel.grid.major = element_blank(),
+                    panel.border = element_blank(),
+                    panel.background = element_blank(),
+                    axis.ticks = element_blank(),
+                    legend.justification = c(1, 0),
+                    legend.position = c(0.6, 0.7),
+                    legend.direction = "horizontal")+
+                    guides(fill = guide_colorbar(barwidth = 7, barheight = 1,
+                    title.position = "top", title.hjust = 0.5))
+
+#Boxplot for Categorical Variables
+
+  boxplot_generate <- function(data, x, y) {
+    res <- ggplot(data, aes(x = x , y = y)) + 
+                      geom_boxplot(outlier.shape = NA, fill = "#DC143C") +
+                      scale_y_continuous(limits = quantile(y, c(0.1, 0.9))) +
+                      theme(axis.text.x=element_text(angle =- 90, vjust = 0.5)) 
+    return (res)
+  }
+  
+  #Need to adjust the y scale for like percentage plots
+  
+  views_cat <- boxplot_generate(combined, combined$category_name, combined$views)
+  #likes_cat <- boxplot_generate(combined, combined$category_name, combined$like_pctg)
+  comments_cat <- boxplot_generate(combined, combined$category_name, combined$comment_count)
+  
+  views_ct <- boxplot_generate(combined, combined$country, combined$views)
+  #likes_ct <- boxplot_generate(combined, combined$country, combined$like_pctg)
+  comment_ct <- boxplot_generate(combined, combined$country, combined$comment_count) 
+```
+
+Beginning Analysis
+```{r Beginning Analysis}
+#Is there a significant relationship between comment_count and likes? 
+
+  comment_likes <- glm(comment_count ~ likes, data = combined, family = poisson(link = log))
+  summary(comment_likes)
+  plot(comment_likes)
+  
+  #Result: Positive coeff, for every additional like, the comment count increases
+  
+  #Running Poisson Model as it seems assumptions are not being satisfied
+  
+  comment_likes_v2 <- glm(comment_count ~ likes, data = combined, family = poisson(link = log))
+  summary(comment_likes_v2)
+  
+#Is there a significant relationship between comment_count and dislikes?
+  
+  comment_dislikes <- glm(comment_count ~ dislikes, data = combined)
+  summary(comment_dislikes)
+  plot(comment_dislikes)
+  
+    #Result: Also a positive coeff (but a higher one)
+  
+  #Running Poisson Model becuase of similar reasons as above
+  
+  comment_dislikes_v2 <- glm(comment_count ~ dislikes, data = combined, family = poisson(link = log))
+  summary(comment_dislikes_v2)
+  
+    #Result: Not as good as the likes model, residual deviance is way higher
+  
+#Can we predict the like to dislike ratio based on the comment_count?
+  
+  comment_ratio <- glm(comment_count ~ like_pctg, data = combined)
+  summary(comment_ratio)
+  plot(comment_ratio)
+  
+#Is there a significant relationship between the categories and the views it receives?
+category_views <- aov(views ~ category_name, data = combined)
+
+#Linear model used to predict views based on various metrics
+viewModel <- lm(views ~ category_name + country + days_to_trend, data = combined)
+
+summary(viewModel)
+
+#Checking assumptions
+plot(viewModel)
+
+viewsLikes <- glm(views ~ likes + dislikes + comment_count + days_to_trend + country, data = combined)
+summary(viewsLikes)
+```
+
+Analysis and Modeling Sections Below
+  Pre-Analysis (splitting the combined dataset into training and testing data randomly)
+
+```{r Pre-Analysis, echo = FALSE, results = 'hide'}
+#Splitting data into training and testing data
+
+set.seed(123)
+smp_size <- floor(0.75 * nrow(combined))
+
+## set the seed to make your partition reproducible
+train_ind <- sample(seq_len(nrow(combined)), size = smp_size)
+
+train <-  combined[train_ind, ]
+test <- combined[-train_ind, ]
+
+```
+
+The first model is built around examining what affects the time it takes a YouTube video to trend
+  Utilized a [blank] model, as well as visualization in Tableau to come up with this result
+  
+```{r Analysis I: How can we predict how long it takes a video to trend? What can the time it takes a video takes to trend tell us about it?}
+
+#Analysis on the time it takes a video to trend on YouTube.
+
+  #Does it depend on categorical variables?
+
+  trendDayCatAOV <- aov(days_to_trend ~ category_name, data = combined)
+  summary(trendDayCatAOV)
+  TukeyHSD(trendDayCatAOV)
+  
+  trendCountryAOV <- aov(days_to_trend ~ country, data = combined)
+  summary(trendCountryAOV)
+  TukeyHSD(trendCountryAOV)
+  
+  #What variables are most important in predicting the number of days it takes a video to trend?
+  
+  #Variables to use:
+    #Rank, Category, Country, Publish Time
+  
+    trend_rank <- glm(days_to_trend ~ rank, data = train)
+    summary(trend_rank)
+    
+    rank_trend <- ggplot(data = train, aes(x = publish_time, y = days_to_trend)) +
+      geom_point() +
+      stat_smooth(method = "lm", col = "dodgerblue3") + 
+      theme(panel.background = element_rect(fill = "white"),
+          axis.line.x=element_line(),
+          axis.line.y=element_line()) +
+      ggtitle("Linear Model Fitted to Data")
+    
+    train$publish_time <- chron(times = train$publish_time)
+    real_trend = train$days_to_trend <= 30
+    
+    test$publish_time <- chron(times = test$publish_time)
+    real_trend = test$days_to_trend <= 30
+    
+    combined$publish_time <- chron(times = combined$publish_time)
+    real_trend = combined$days_to_trend <= 30
+    
+    combined_new <- combined[real_trend, ]
+    train1_trend_df <- train[real_trend, ]
+    test1_trend_df <- test[real_trend, ]
+    
+    #Refactoring Country Dummy Variable. Using Great Britain as a reference level as its mean is the highest
+    train1_trend_df$country <- as.factor(train1_trend_df$country)
+    train1_trend_df$country <- relevel(train1_trend_df$country, ref = "GB")
+    train1_trend_df$same_day_day_trend <- as.factor(train1_trend_df$same_day_trend)
+    
+    test1_trend_df$country <- as.factor(test1_trend_df$country)
+    test1_trend_df$country <- relevel(test1_trend_df$country, ref = "GB")
+    test1_trend_df$same_day_day_trend <- as.factor(test1_trend_df$same_day_trend)
+    
+    combined_new$country <- as.factor(combined_new$country)
+    combined_new$country <- relevel(combined_new$country, ref = "GB")
+    combined_new$same_day_day_trend <- as.factor(combined_new$same_day_trend)
+    
+    #Training Models for Days it takes to trend, and a logistic model for same day trend
+    
+    #How to make days to trend linear with rank and publish_time?
+    
+    plot(x = train1_trend_df$rank, y = train1_trend_df$days_to_trend)
+    plot(x = train1_trend_df$publish_time, y = train1_trend_df$days_to_trend)
+    
+    #Checking Overdispersion
+    P__disp <- function(x) {
+   pr <- sum(residuals(x, type="pearson")^2)
+   dispersion <- pr/x$df.residual
+   c(pr, dispersion)
+    }
+    
+
+    
+    
+    #Model Creation
+  
+    train_control <- trainControl(method = "cv", number = 10)
+    
+    same_day_trend <- train(factor(same_day_trend) ~ rank + category_name + country + publish_time,
+                             data = combined_new,
+                             trControl = train_control,
+                             method = "glm",
+                             family = binomial())
+    
+    
+    days_to_trend.lm <- train(days_to_trend ~ rank + category_name + country + publish_time, 
+                              data = combined_new,
+                              trControl = train_control,
+                              method = "glm")
+    
+    days_to_trend.nb <- glm.nb(days_to_trend ~ rank + category_name + country + publish_time, data = train1_trend_df)
+    
+    days_to_trend.pois <- train(days_to_trend ~ rank + category_name + country + publish_time, 
+                              data = combined_new,
+                              trControl = train_control,
+                              method = "glm",
+                              family = "poisson")
+    
+    days_to_trend.rf <- train(days_to_trend ~ rank + category_name + country + publish_time, 
+                              data = combined_new,
+                              trControl = train_control,
+                              method = "rf")
+    
+    #Model Validation & Tuning
+
+    predict <- predict(days_to_trend.nb, newdata = test1_trend_df, type = "response")
+    predict <- ifelse(predict2 > 0.5, 1,0)
+    accuracy_nb <- accuracy(test1_trend_df$days_to_trend, predict1)
+    
+    
+#Can we predict how long it will take certain videos to trend based on other metrics? (Time Series Analysis)
+    
+    days_trend <- ts(train1$days_to_trend, start = c(2007,3), end = c(2018,6), frequency = 12)
+    days_trend <- tsclean(days_trend)
+    
+    #Want to better visualize the trend to take into account the outlier at the last section
+    
+    log_days <- log(days_trend)
+    
+    #Using SMA to smooth over the trends
+    
+    days_trend_SMA <- SMA(days_trend, n = 9)
+    plot.ts(days_trend_SMA)
+    
+    #To Address: Is this data seasonal?  
+    
+    #Using Holt Winters 
+    days_fcts <- HoltWinters(days_trend, beta = FALSE, gamma = FALSE)
+    
+    days_fcts_2 <- forecast:::forecast.HoltWinters(days_fcts, h = 8)
+    
+    #ARIMA models
+    autoarima1 <- auto.arima(days_trend)
+    autoarima2 <- auto.arima(log_days)
+    
+```
+
+The second model is built  around trying to understand how we might be able to predict the number of views a YouTube video will get
+  Utilized a [blank] model, as well as visualization in Tableau to come up with this result
+  
+```{r Analysis II}
+#Overall rpart model to determine the most important factors influencing views on a video
+
+base <- rpart(views ~ likes + dislikes + comment_count + days_to_trend, data = train1)
+summary(base)
+
+
+```
+Analysis III: How to predict like percentage
+
+```{r Analysis III}
+
+#Can we predict like percentage based on how long it takes a video to trend, it's category, country, and rank?
+
+  like_ptg <- glm(like_pctg ~ category_name + days_to_trend + country + rank, data = combined)
+  summary(like_ptg)
+
+```
+
+
+Main Questions to Ask for Time Series Analysis:
+
+  Have trending videos garnered more views as time progresses?
